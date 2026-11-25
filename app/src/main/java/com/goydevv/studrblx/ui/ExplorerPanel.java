@@ -827,6 +827,13 @@ public final class ExplorerPanel extends LinearLayout implements Studio.Listener
                     return ExplorerPanel.showContextMenu$lambda$47(ExplorerPanel.this);
                 }
             }));
+            items.add(TuplesKt.to("Upload to Roblox…", new Function0() {
+                @Override // kotlin.jvm.functions.Function0
+                public final Object invoke() {
+                    ExplorerPanel.this.actions.uploadSelectionToRoblox();
+                    return Unit.INSTANCE;
+                }
+            }));
         }
         if (!i.getChildren().isEmpty()) {
             items.add(TuplesKt.to("Expand All", new Function0() { // from class: com.goydevv.studrblx.ui.ExplorerPanel$$ExternalSyntheticLambda14

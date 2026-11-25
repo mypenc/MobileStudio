@@ -2529,7 +2529,7 @@ public final class ToolboxPanel extends LinearLayout {
     }
 
     static final boolean myModels$row$lambda$160(final Context $ctx, final File $f, final ToolboxPanel this$0, final boolean $recentItem, final String $cls, View it) {
-        Collection opts = CollectionsKt.listOf(new String[]{"Insert", "Rename…", "Delete"});
+        Collection opts = CollectionsKt.listOf(new String[]{"Insert", "Rename…", "Delete", "Upload to Roblox…"});
         Dialogs dialogs = Dialogs.INSTANCE;
         Intrinsics.checkNotNull($ctx);
         dialogs.themed($ctx).setTitle(FilesKt.getNameWithoutExtension($f)).setItems((CharSequence[]) opts.toArray(new String[0]), new DialogInterface.OnClickListener() { // from class: com.goydevv.studrblx.ui.ToolboxPanel$$ExternalSyntheticLambda59
@@ -2565,6 +2565,14 @@ public final class ToolboxPanel extends LinearLayout {
                         return ToolboxPanel.myModels$row$lambda$160$lambda$159$lambda$158($f, this$0);
                     }
                 });
+                break;
+            case 3:
+                try {
+                    byte[] raw = com.goydevv.studrblx.format.RbxFile.INSTANCE.unwrap(kotlin.io.FilesKt.readBytes($f));
+                    com.goydevv.studrblx.anim.UploadDialog.show((Activity) $ctx, "Model", FilesKt.getNameWithoutExtension($f), raw);
+                } catch (Exception e) {
+                    android.widget.Toast.makeText($ctx, "Could not read " + $f.getName(), android.widget.Toast.LENGTH_SHORT).show();
+                }
                 break;
             default:
                 break;

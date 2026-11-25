@@ -8,6 +8,8 @@ import kotlin.jvm.functions.Function0;
 public interface MainActions {
     void addSelectionToToolbox();
 
+    void uploadSelectionToRoblox();
+
     void applyThemeChange();
 
     void exportSelection();

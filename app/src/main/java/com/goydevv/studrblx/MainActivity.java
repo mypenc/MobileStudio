@@ -6816,6 +6816,22 @@ public final class MainActivity extends AppCompatActivity implements MainActions
     }
 
     @Override // com.goydevv.studrblx.ui.MainActions
+    public void uploadSelectionToRoblox() {
+        Studio st = this.studio;
+        if (st == null) return;
+        byte[] bytes = st.serializeSelection();
+        if (bytes == null || st.getSelection().isEmpty()) {
+            toast("Nothing selected");
+            return;
+        }
+        String n;
+        synchronized (st.getLock()) {
+            n = ((Instance) CollectionsKt.first((List) st.getSelection())).getName();
+        }
+        com.goydevv.studrblx.anim.UploadDialog.show(this, "Model", n, RbxFile.INSTANCE.unwrap(bytes));
+    }
+
+    @Override // com.goydevv.studrblx.ui.MainActions
     public void importToToolbox() {
         this.openMode = OpenMode.TOOLBOX;
         this.openLauncher.launch(new String[]{"*/*"});

@@ -58,6 +58,7 @@ public final class AnimUploader {
                 .putString("key", s.apiKey).putBoolean("group", s.group).putLong("creator", s.creatorId).apply();
     }
 
+    /** Serialises a detached KeyframeSequence and uploads it as an Animation asset. */
     public static void upload(final Context ctx, final Instance sequence, final String displayName,
                               final String description, final Settings st, final Callback cb) {
         new Thread(new Runnable() {
@@ -67,59 +68,80 @@ public final class AnimUploader {
                     cb.onStatus("Serialising animation...");
                     byte[] rbxm = RbxBinaryWriter.INSTANCE.write(Collections.singletonList(sequence),
                             new LinkedHashMap<String, String>());
-                    if (rbxm == null || rbxm.length == 0) throw new Exception("Could not serialise the KeyframeSequence.");
-
-                    String boundary = "----StudioRblx" + System.nanoTime();
-                    JSONObject creator = new JSONObject().put(st.group ? "groupId" : "userId", Long.toString(st.creatorId));
-                    JSONObject req = new JSONObject()
-                            .put("assetType", "Animation")
-                            .put("displayName", displayName)
-                            .put("description", description)
-                            .put("creationContext", new JSONObject().put("creator", creator));
-
-                    ByteArrayOutputStream body = new ByteArrayOutputStream();
-                    String nl = "\r\n";
-                    body.write(("--" + boundary + nl + "Content-Disposition: form-data; name=\"request\"" + nl
-                            + "Content-Type: application/json" + nl + nl + req.toString() + nl).getBytes(UTF8));
-                    body.write(("--" + boundary + nl + "Content-Disposition: form-data; name=\"fileContent\"; filename=\""
-                            + safe(displayName) + ".rbxm\"" + nl + "Content-Type: model/x-rbxm" + nl + nl).getBytes(UTF8));
-                    body.write(rbxm);
-                    body.write((nl + "--" + boundary + "--" + nl).getBytes(UTF8));
-
-                    Map<String, String> headers = new HashMap<String, String>();
-                    headers.put("x-api-key", st.apiKey);
-                    cb.onStatus("Uploading " + (rbxm.length / 1024 + 1) + " KB...");
-                    Http.Response r = Http.INSTANCE.call("https://apis.roblox.com/assets/v1/assets", "POST", headers,
-                            body.toByteArray(), "multipart/form-data; boundary=" + boundary, 4 * 1024 * 1024);
-                    if (!r.getOk()) throw new Exception(explain(r.getCode(), r.getText()));
-
-                    JSONObject op = new JSONObject(r.getText());
-                    for (int i = 0; i < 40; i++) {
-                        if (op.optBoolean("done", false)) break;
-                        String path = op.optString("path", "");
-                        if (path.length() == 0) break;
-                        cb.onStatus("Waiting for Roblox to process... (" + (i + 1) + ")");
-                        Thread.sleep(1500);
-                        Http.Response pr = Http.INSTANCE.call("https://apis.roblox.com/assets/v1/" + path, "GET", headers,
-                                null, null, 1024 * 1024);
-                        if (!pr.getOk()) throw new Exception(explain(pr.getCode(), pr.getText()));
-                        op = new JSONObject(pr.getText());
-                    }
-                    if (!op.optBoolean("done", false)) {
-                        throw new Exception("Roblox is still processing the upload. Check your Creator Hub inventory in a minute.");
-                    }
-                    if (op.has("error")) {
-                        throw new Exception(op.getJSONObject("error").optString("message", "Upload rejected."));
-                    }
-                    JSONObject resp = op.optJSONObject("response");
-                    String id = resp == null ? "" : resp.optString("assetId", "");
-                    if (id.length() == 0) throw new Exception("Upload finished but no assetId was returned.");
-                    cb.onDone(id);
+                    doUpload(rbxm, "Animation", displayName, description, st, cb);
                 } catch (Throwable t) {
                     cb.onError(t.getMessage() == null ? t.toString() : t.getMessage());
                 }
             }
         }, "anim-upload").start();
+    }
+
+    /** Uploads ready-made .rbxm bytes (e.g. a Model for the toolbox) as the given Open Cloud asset type. */
+    public static void uploadBytes(final Context ctx, final byte[] rbxm, final String assetType, final String displayName,
+                                   final String description, final Settings st, final Callback cb) {
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    doUpload(rbxm, assetType, displayName, description, st, cb);
+                } catch (Throwable t) {
+                    cb.onError(t.getMessage() == null ? t.toString() : t.getMessage());
+                }
+            }
+        }, "cloud-upload").start();
+    }
+
+    private static void doUpload(byte[] rbxm, String assetType, String displayName, String description,
+                                 Settings st, Callback cb) throws Exception {
+        if (rbxm == null || rbxm.length == 0) throw new Exception("Nothing to upload (the file is empty).");
+        if (rbxm.length > 20 * 1024 * 1024) throw new Exception("Roblox allows at most 20 MB per upload; this is " + (rbxm.length / 1024 / 1024) + " MB.");
+
+        String boundary = "----StudioRblx" + System.nanoTime();
+        JSONObject creator = new JSONObject().put(st.group ? "groupId" : "userId", Long.toString(st.creatorId));
+        JSONObject req = new JSONObject()
+                .put("assetType", assetType)
+                .put("displayName", displayName.length() > 50 ? displayName.substring(0, 50) : displayName)
+                .put("description", description)
+                .put("creationContext", new JSONObject().put("creator", creator));
+
+        ByteArrayOutputStream body = new ByteArrayOutputStream();
+        String nl = "\r\n";
+        body.write(("--" + boundary + nl + "Content-Disposition: form-data; name=\"request\"" + nl
+                + "Content-Type: application/json" + nl + nl + req.toString() + nl).getBytes(UTF8));
+        body.write(("--" + boundary + nl + "Content-Disposition: form-data; name=\"fileContent\"; filename=\""
+                + safe(displayName) + ".rbxm\"" + nl + "Content-Type: model/x-rbxm" + nl + nl).getBytes(UTF8));
+        body.write(rbxm);
+        body.write((nl + "--" + boundary + "--" + nl).getBytes(UTF8));
+
+        Map<String, String> headers = new HashMap<String, String>();
+        headers.put("x-api-key", st.apiKey);
+        cb.onStatus("Uploading " + (rbxm.length / 1024 + 1) + " KB...");
+        Http.Response r = Http.INSTANCE.call("https://apis.roblox.com/assets/v1/assets", "POST", headers,
+                body.toByteArray(), "multipart/form-data; boundary=" + boundary, 4 * 1024 * 1024);
+        if (!r.getOk()) throw new Exception(explain(r.getCode(), r.getText()));
+
+        JSONObject op = new JSONObject(r.getText());
+        for (int i = 0; i < 40; i++) {
+            if (op.optBoolean("done", false)) break;
+            String path = op.optString("path", "");
+            if (path.length() == 0) break;
+            cb.onStatus("Waiting for Roblox to process... (" + (i + 1) + ")");
+            Thread.sleep(1500);
+            Http.Response pr = Http.INSTANCE.call("https://apis.roblox.com/assets/v1/" + path, "GET", headers,
+                    null, null, 1024 * 1024);
+            if (!pr.getOk()) throw new Exception(explain(pr.getCode(), pr.getText()));
+            op = new JSONObject(pr.getText());
+        }
+        if (!op.optBoolean("done", false)) {
+            throw new Exception("Roblox is still processing the upload. Check your Creator Hub inventory in a minute.");
+        }
+        if (op.has("error")) {
+            throw new Exception(op.getJSONObject("error").optString("message", "Upload rejected."));
+        }
+        JSONObject resp = op.optJSONObject("response");
+        String id = resp == null ? "" : resp.optString("assetId", "");
+        if (id.length() == 0) throw new Exception("Upload finished but no assetId was returned.");
+        cb.onDone(id);
     }
 
     private static String safe(String s) {
