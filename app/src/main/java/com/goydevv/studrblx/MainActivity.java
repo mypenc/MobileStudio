@@ -149,6 +149,9 @@ public final class MainActivity extends AppCompatActivity implements MainActions
     private StartScreen startScreen;
     private Studio studio;
     private LinearLayout tabRow;
+    private View chromeTop;
+    private View chromeBottomBar;
+    com.goydevv.studrblx.anim.AnimationModeView animMode;
     private TextView titleView;
     private ToolboxPanel toolbox;
     private ViewportView viewport;
@@ -172,7 +175,7 @@ public final class MainActivity extends AppCompatActivity implements MainActions
             return MainActivity.accountListener$lambda$4(MainActivity.this);
         }
     };
-    private final List<String> ribbonTabs = CollectionsKt.listOf(new String[]{StartScreen.HOME, "Model", "Avatar", "UI", "Test", "View", "Plugins", "Script"});
+    private final List<String> ribbonTabs = CollectionsKt.listOf(new String[]{StartScreen.HOME, "Model", "Avatar", "UI", "Test", "View", "Plugins", "Script", "Animate"});
     private String ribbonTab = StartScreen.HOME;
     private final IdentityHashMap<Instance, ScriptEditor> openEditors = new IdentityHashMap<>();
     private final ArrayList<Instance> editorOrder = new ArrayList<>();
@@ -284,6 +287,104 @@ public final class MainActivity extends AppCompatActivity implements MainActions
         }
     }
 
+
+
+    // ------------------------------------------------------------------ Animation mode
+    private void buildAnimateRibbon() {
+        group("Animation", () -> {
+            tool(inst("KeyframeSequence"), animMode != null ? "Exit Animation Mode" : "Animation Editor", animMode != null, () -> {
+                toggleAnimMode();
+                return Unit.INSTANCE;
+            });
+            return Unit.INSTANCE;
+        });
+        group("How to", () -> {
+            tool(inst("Model"), "Select a rig first", false, () -> {
+                Toast.makeText(this, "Select a rig (a Model with Motor6D joints, e.g. an R15/R6 dummy), then tap Animation Editor.", Toast.LENGTH_LONG).show();
+                return Unit.INSTANCE;
+            });
+            return Unit.INSTANCE;
+        });
+    }
+
+    private void toggleAnimMode() {
+        if (animMode != null) {
+            animMode.requestExit();
+            return;
+        }
+        if (this.studio.isPlaying()) {
+            Toast.makeText(this, "Stop the playtest before opening the Animation Editor.", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        com.goydevv.studrblx.anim.RigInfo rig = null;
+        for (Instance i : new ArrayList<Instance>(this.studio.getSelection())) {
+            rig = com.goydevv.studrblx.anim.RigInfo.detect(i);
+            if (rig != null) break;
+        }
+        if (rig == null) {
+            Toast.makeText(this, "Select a valid rig first: a Model whose parts are connected by Motor6D joints.", Toast.LENGTH_LONG).show();
+            return;
+        }
+        enterAnimMode(rig);
+    }
+
+    private void setChromeVisible(boolean visible) {
+        int v = visible ? View.VISIBLE : View.GONE;
+        if (this.chromeTop != null) this.chromeTop.setVisibility(v);
+        if (this.ribbonScroll != null) this.ribbonScroll.setVisibility(v);
+        if (this.ribbonDivider != null) this.ribbonDivider.setVisibility(v);
+        if (this.chromeBottomBar != null) this.chromeBottomBar.setVisibility(v);
+    }
+
+    private void enterAnimMode(com.goydevv.studrblx.anim.RigInfo rig) {
+        final boolean wasHidden = this.dock != null && this.dock.getAllHidden();
+        setAllHidden(true);
+        setChromeVisible(false);
+        this.animMode = new com.goydevv.studrblx.anim.AnimationModeView(this, this.studio, rig, () -> exitAnimMode(wasHidden));
+        this.rootFrame.addView(this.animMode, new FrameLayout.LayoutParams(-1, -1));
+        this.animMode.setCutout(cutL, cutT, cutR);
+        this.animMode.start();
+    }
+
+    private void exitAnimMode(boolean wasHidden) {
+        if (this.animMode != null) {
+            this.rootFrame.removeView(this.animMode);
+            this.animMode = null;
+        }
+        setChromeVisible(true);
+        setAllHidden(wasHidden);
+        buildRibbon();
+    }
+
+    /** Extend the window into the display cutout (notch) and keep the system bars hidden. */
+    private void applyEdgeToEdge() {
+        try {
+            android.view.WindowManager.LayoutParams lp = getWindow().getAttributes();
+            if (android.os.Build.VERSION.SDK_INT >= 30) {
+                lp.layoutInDisplayCutoutMode = android.view.WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS;
+            } else if (android.os.Build.VERSION.SDK_INT >= 28) {
+                lp.layoutInDisplayCutoutMode = android.view.WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES;
+            }
+            getWindow().setAttributes(lp);
+            getWindow().setStatusBarColor(0);
+            getWindow().setNavigationBarColor(0);
+        } catch (Throwable ignored) {
+        }
+    }
+
+    @Override
+    public void onWindowFocusChanged(boolean hasFocus) {
+        super.onWindowFocusChanged(hasFocus);
+        if (hasFocus) {
+            try {
+                WindowInsetsControllerCompat c = new WindowInsetsControllerCompat(getWindow(), getWindow().getDecorView());
+                c.hide(WindowInsetsCompat.Type.systemBars());
+                c.setSystemBarsBehavior(WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
+            } catch (Throwable ignored) {
+            }
+        }
+    }
+
     @Override // androidx.fragment.app.FragmentActivity, androidx.activity.ComponentActivity, androidx.core.app.ComponentActivity, android.app.Activity
     protected void onCreate(Bundle savedInstanceState) {
         Studio studio;
@@ -317,6 +418,7 @@ public final class MainActivity extends AppCompatActivity implements MainActions
         Ui.INSTANCE.applyTheme(Settings.INSTANCE.getTheme());
         getWindow().addFlags(128);
         WindowCompat.setDecorFitsSystemWindows(getWindow(), false);
+        applyEdgeToEdge();
         WindowInsetsControllerCompat windowInsetsControllerCompat = new WindowInsetsControllerCompat(getWindow(), getWindow().getDecorView());
         windowInsetsControllerCompat.hide(WindowInsetsCompat.Type.systemBars());
         windowInsetsControllerCompat.setSystemBarsBehavior(2);
@@ -479,6 +581,10 @@ public final class MainActivity extends AppCompatActivity implements MainActions
 
         @Override // androidx.activity.OnBackPressedCallback
         public void handleOnBackPressed() {
+            if (MainActivity.this.animMode != null) {
+                MainActivity.this.animMode.requestExit();
+                return;
+            }
             if (MainActivity.this.startScreen != null) {
                 if (MainActivity.this.hasOpenPlace()) {
                     MainActivity.this.closeStart();
@@ -1098,6 +1204,7 @@ public final class MainActivity extends AppCompatActivity implements MainActions
         top.setOrientation(0);
         top.setGravity(16);
         top.setBackgroundColor(Ui.INSTANCE.getTOPBAR());
+        this.chromeTop = top;
         TextView textViewIconTextButton = Ui.INSTANCE.iconTextButton(this, null, "File", Ui.INSTANCE.getACCENT(), new Function1() { // from class: com.goydevv.studrblx.MainActivity$$ExternalSyntheticLambda172
             @Override // kotlin.jvm.functions.Function1
             public final Object invoke(Object obj) {
@@ -1484,6 +1591,7 @@ public final class MainActivity extends AppCompatActivity implements MainActions
             }
         });
         bottomTabBar.addView(clrTabBtn, Ui.INSTANCE.lp(-2, -2, 0.0f));
+        this.chromeBottomBar = bottomTabBar;
         root.addView(bottomTabBar, Ui.INSTANCE.lp(-1, Ui.INSTANCE.dp(this, 28.0f), 0.0f));
         DockLayout dockLayout12 = this.dock;
         if (dockLayout12 == null) {
@@ -1494,6 +1602,7 @@ public final class MainActivity extends AppCompatActivity implements MainActions
         FrameLayout frameLayout3 = new FrameLayout(this);
         frameLayout3.setBackgroundColor(Ui.INSTANCE.getBG());
         this.rootFrame = frameLayout3;
+        frameLayout3.setTag(this);
         FrameLayout frameLayout4 = this.rootFrame;
         if (frameLayout4 == null) {
             Intrinsics.throwUninitializedPropertyAccessException("rootFrame");
@@ -1599,10 +1708,37 @@ public final class MainActivity extends AppCompatActivity implements MainActions
     static final WindowInsetsCompat buildUi$lambda$59(View v, WindowInsetsCompat insets) {
         Intrinsics.checkNotNullParameter(v, "v");
         Intrinsics.checkNotNullParameter(insets, "insets");
-        Insets bars = insets.getInsets(WindowInsetsCompat.Type.displayCutout() | WindowInsetsCompat.Type.ime());
-        Intrinsics.checkNotNullExpressionValue(bars, "getInsets(...)");
-        v.setPadding(bars.left, bars.top, bars.right, bars.bottom);
+        Insets cut = insets.getInsets(WindowInsetsCompat.Type.displayCutout());
+        Insets ime = insets.getInsets(WindowInsetsCompat.Type.ime());
+        // Only the keyboard shrinks the layout now; the notch area is drawn into.
+        v.setPadding(0, 0, 0, ime.bottom);
+        Object owner = v.getTag();
+        if (owner instanceof MainActivity) {
+            ((MainActivity) owner).applyCutoutToChrome(cut.left, cut.top, cut.right);
+        }
         return insets;
+    }
+
+    private int cutL = 0, cutT = 0, cutR = 0;
+
+    /** Keep tappable chrome (title/tabs/ribbon/output bar) clear of the notch while the viewport bleeds behind it. */
+    void applyCutoutToChrome(int l, int t, int r) {
+        cutL = l;
+        cutT = t;
+        cutR = r;
+        try {
+            View[] rows = new View[]{this.chromeTop, this.ribbonScroll, this.chromeBottomBar};
+            for (View row : rows) {
+                if (row == null) continue;
+                int pl = row.getTag(0x7f0a0001) instanceof Integer ? (Integer) row.getTag(0x7f0a0001) : row.getPaddingLeft();
+                int pr = row.getTag(0x7f0a0002) instanceof Integer ? (Integer) row.getTag(0x7f0a0002) : row.getPaddingRight();
+                row.setTag(0x7f0a0001, pl);
+                row.setTag(0x7f0a0002, pr);
+                row.setPadding(pl + l, row.getPaddingTop(), pr + r, row.getPaddingBottom());
+            }
+            if (this.animMode != null) this.animMode.setCutout(l, t, r);
+        } catch (Throwable ignored) {
+        }
     }
 
     private final int dp(float v) {
@@ -2228,6 +2364,10 @@ public final class MainActivity extends AppCompatActivity implements MainActions
             linearLayout = null;
         }
         linearLayout.removeAllViews();
+        if ("Animate".equals(this.ribbonTab)) {
+            buildAnimateRibbon();
+            return;
+        }
         String str = this.ribbonTab;
         switch (str.hashCode()) {
             case 2708:

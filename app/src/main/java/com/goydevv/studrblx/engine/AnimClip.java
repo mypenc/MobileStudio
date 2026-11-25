@@ -79,6 +79,10 @@ public final class AnimClip {
         return this.priority;
     }
 
+    public final Key[] keysOf(String joint) {
+        return this.joints.get(joint);
+    }
+
     public final Set<String> getJointNames() {
         return this.joints.keySet();
     }
