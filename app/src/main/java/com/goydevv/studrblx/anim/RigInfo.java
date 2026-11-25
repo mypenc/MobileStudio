@@ -62,6 +62,20 @@ public final class RigInfo {
         return -1;
     }
 
+    public static String norm(String n) {
+        return n == null ? "" : n.toLowerCase(java.util.Locale.US).replaceAll("[^a-z0-9]", "");
+    }
+
+    /** Match an animation's bone name to a joint: Part1 name first, then Motor6D name, ignoring case/spaces. */
+    public int match(String key) {
+        int i = indexOf(key);
+        if (i >= 0) return i;
+        String k = norm(key);
+        for (int a = 0; a < joints.size(); a++) if (norm(joints.get(a).name).equals(k)) return a;
+        for (int a = 0; a < joints.size(); a++) if (norm(joints.get(a).motor.getName()).equals(k)) return a;
+        return -1;
+    }
+
     public int indexOfPart(Instance part) {
         for (int i = 0; i < joints.size(); i++) {
             if (joints.get(i).p1 == part) return i;

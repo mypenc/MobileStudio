@@ -63,6 +63,7 @@ public final class AnimSession {
     private final ArrayList<Map<String, TreeMap<Integer, Key>>> undo = new ArrayList<Map<String, TreeMap<Integer, Key>>>();
     private final ArrayList<Map<String, TreeMap<Integer, Key>>> redo = new ArrayList<Map<String, TreeMap<Integer, Key>>>();
     private Map<String, CFrame> clipboard = null;
+    private final IdentityHashMap<Instance, CFrame> lastApplied = new IdentityHashMap<Instance, CFrame>();
 
     public AnimSession(RigInfo rig) {
         this.rig = rig;
@@ -282,6 +283,7 @@ public final class AnimSession {
             CFrame p0 = PartData.INSTANCE.cframe(j.p0);
             CFrame cf = p0.times(j.c0).times(current(j.name)).times(j.c1Inv);
             j.p1.set("CFrame", cf, true);
+            lastApplied.put(j.p1, cf);
         }
     }
 
@@ -290,6 +292,106 @@ public final class AnimSession {
         for (Map.Entry<Instance, CFrame> e : originals.entrySet()) {
             e.getKey().set("CFrame", e.getValue(), true);
         }
+    }
+
+
+    private static boolean near(CFrame a, CFrame b) {
+        float[] x = a.components();
+        float[] y = b.components();
+        for (int i = 0; i < x.length && i < y.length; i++) if (Math.abs(x[i] - y[i]) > 1e-4f) return false;
+        return true;
+    }
+
+    /**
+     * Gizmo support: if the user dragged the joint's part with the Move/Rotate tool, convert the new world CFrame
+     * back into a Motor6D Transform. Rotate keeps the joint pivot (rotation only), Move keeps the rotation.
+     * Returns true when the pose changed.
+     */
+    public boolean absorbExternalEdit(int jointIdx, boolean rotationOnly, boolean translationOnly, boolean commitUndo) {
+        if (jointIdx < 0 || jointIdx >= rig.joints.size()) return false;
+        RigInfo.Joint j = rig.joints.get(jointIdx);
+        CFrame exp = lastApplied.get(j.p1);
+        if (exp == null) return false;
+        CFrame act = PartData.INSTANCE.cframe(j.p1);
+        if (near(exp, act)) return false;
+        CFrame p0 = PartData.INSTANCE.cframe(j.p0);
+        CFrame t = j.c0.inverse().times(p0.inverse()).times(act).times(j.c1);
+        CFrame old = current(j.name);
+        CFrame nt;
+        if (rotationOnly) nt = t.rotationOnly().withPosition(old.getPosition());
+        else if (translationOnly) nt = old.rotationOnly().withPosition(t.getPosition());
+        else nt = t;
+        setPose(j.name, nt, commitUndo);
+        return true;
+    }
+
+    /** Rotate the whole rig so the root part has zero rotation (about the root's position). */
+    public void zeroRigRotation() {
+        CFrame root = PartData.INSTANCE.cframe(rig.rootPart);
+        Vector3 pos = root.getPosition();
+        CFrame fix = CFrame.INSTANCE.at(pos).times(root.rotationOnly().inverse()).times(CFrame.INSTANCE.at(new Vector3(-pos.getX(), -pos.getY(), -pos.getZ())));
+        for (Instance d : rig.model.descendants(new ArrayList<Instance>())) {
+            if (d.isA("BasePart")) d.set("CFrame", fix.times(PartData.INSTANCE.cframe(d)), true);
+        }
+        captureOriginals();
+        applyPose();
+    }
+
+    /**
+     * Import frames from a CFrame table. Bones that do not exist in this rig (extra Bone.001, Plane, Handle...) are dropped.
+     * Returns a human readable summary.
+     */
+    public String importFrames(List<CFrameTable.Frame> frames, String label) {
+        pushUndo();
+        for (TreeMap<Integer, Key> t : tracks.values()) t.clear();
+        java.util.LinkedHashSet<String> used = new java.util.LinkedHashSet<String>();
+        java.util.LinkedHashSet<String> dropped = new java.util.LinkedHashSet<String>();
+        List<Integer> ticks = new ArrayList<Integer>();
+        for (CFrameTable.Frame f : frames) ticks.add(snapExact(f.time));
+        int fpsPick = 60;
+        int[] cand = {24, 30, 60};
+        for (int c : cand) {
+            boolean ok = true;
+            for (int t : ticks) if (t % (TICKS / c) != 0) ok = false;
+            if (ok) {
+                fpsPick = c;
+                break;
+            }
+        }
+        fps = fpsPick;
+        int maxTick = 0;
+        for (int i = 0; i < frames.size(); i++) {
+            int tick = ticks.get(i);
+            maxTick = Math.max(maxTick, tick);
+            for (Map.Entry<String, CFrame> e : frames.get(i).data.entrySet()) {
+                int idx = rig.match(e.getKey());
+                if (idx < 0) {
+                    dropped.add(e.getKey());
+                    continue;
+                }
+                String jn = rig.joints.get(idx).name;
+                used.add(jn);
+                track(jn).put(tick, new Key(e.getValue(), 0, 1));
+            }
+        }
+        name = label;
+        loop = true;
+        lengthTicks = Math.max(maxTick, TICKS / 4);
+        curTick = 0;
+        live.clear();
+        dirty = true;
+        return frames.size() + " frames, " + String.format(java.util.Locale.US, "%.2f", maxTick / (float) TICKS) + "s @ " + fps + " fps\n"
+                + "Used: " + (used.isEmpty() ? "(none - names did not match this rig)" : join(used)) + "\n"
+                + (dropped.isEmpty() ? "" : "Discarded (not in this rig): " + join(dropped));
+    }
+
+    private static String join(java.util.Collection<String> c) {
+        StringBuilder sb = new StringBuilder();
+        for (String s : c) {
+            if (sb.length() > 0) sb.append(", ");
+            sb.append(s);
+        }
+        return sb.toString();
     }
 
     // ---------------------------------------------------------------- KeyframeSequence in/out

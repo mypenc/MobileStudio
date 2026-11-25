@@ -53,7 +53,7 @@ public final class TimelineView extends View {
         this.session = s;
         d = ctx.getResources().getDisplayMetrics().density;
         pxPerSec = 160 * d;
-        text.setTextSize(10 * d);
+        text.setTextSize(9 * d);
         text.setColor(Ui.INSTANCE.getDIM());
     }
 
@@ -97,7 +97,7 @@ public final class TimelineView extends View {
     }
 
     private float rulerH() {
-        return 22 * d;
+        return 16 * d;
     }
 
     private float rowH() {
@@ -142,7 +142,7 @@ public final class TimelineView extends View {
             float x = (sec - originSec) * pxPerSec;
             p.setColor(0x55FFFFFF);
             c.drawLine(x, 0, x, h, p);
-            c.drawText(trim(sec) + "s", x + 3 * d, rh - 8 * d, text);
+            c.drawText(trim(sec) + "s", x + 3 * d, rh - 5 * d, text);
         }
         p.setColor(Ui.INSTANCE.getBORDER());
         c.drawLine(0, rh, w, rh, p);
@@ -150,8 +150,8 @@ public final class TimelineView extends View {
 
         // Row labels
         text.setColor(Ui.INSTANCE.getDIM());
-        c.drawText("All joints", 4 * d, rh + 12 * d, text);
-        c.drawText(joint == null ? "-" : joint, 4 * d, rh + row + 12 * d, text);
+        c.drawText("All", 3 * d, rh + 10 * d, text);
+        c.drawText(joint == null ? "-" : joint, 3 * d, rh + row + 10 * d, text);
 
         TreeSet<Integer> all = session.allTicks();
         for (int t : all) drawKey(c, xOf(t), rh + row * 0.55f, t == selectedKey, 0xFFE0B040);
@@ -180,7 +180,7 @@ public final class TimelineView extends View {
     }
 
     private void drawKey(Canvas c, float x, float y, boolean selected, int color) {
-        float r = 7 * d;
+        float r = 5 * d;
         diamond.reset();
         diamond.moveTo(x, y - r);
         diamond.lineTo(x + r, y);
@@ -206,7 +206,7 @@ public final class TimelineView extends View {
         boolean jointRow = y > rh + row;
         if (!summary && !jointRow) return -1;
         int best = -1;
-        float bestD = 16 * d;
+        float bestD = 14 * d;
         Iterable<Integer> ticks = summary ? session.allTicks()
                 : (joint == null ? new TreeSet<Integer>() : session.track(joint).keySet());
         for (int t : ticks) {

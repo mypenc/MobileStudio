@@ -1078,7 +1078,8 @@ public final class AvatarUi {
             }
             Vector3 vector3SpawnPoint = studio.spawnPoint(new Vector3(4.0f, 0.0f, 2.0f));
             Vector3 forward = studio.getCamera().getForward();
-            CFrame cFrameTimes = CFrame.INSTANCE.at(new Vector3(vector3SpawnPoint.getX(), vector3SpawnPoint.getY() - pairBoundsOf.getFirst().getY(), vector3SpawnPoint.getZ())).times(CFrame.INSTANCE.ry((float) Math.atan2(forward.getX(), forward.getZ())));
+            // Translate only: rigs must be inserted with zero rotation (0,0,0), not turned toward the camera.
+            CFrame cFrameTimes = CFrame.INSTANCE.at(new Vector3(vector3SpawnPoint.getX(), vector3SpawnPoint.getY() - pairBoundsOf.getFirst().getY(), vector3SpawnPoint.getZ()));
             for (Instance instance : list) {
                 instance.set("CFrame", cFrameTimes.times(PartData.INSTANCE.cframe(instance)), false);
             }

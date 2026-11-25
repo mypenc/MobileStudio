@@ -150,6 +150,14 @@ public final class MainActivity extends AppCompatActivity implements MainActions
     private Studio studio;
     private LinearLayout tabRow;
     private View chromeTop;
+    private final ActivityResultLauncher<String[]> animFileLauncher = registerForActivityResult(new ActivityResultContracts.OpenDocument(), uri -> {
+        if (uri != null && this.animMode != null) this.animMode.onTextFile(uri);
+    });
+
+    /** Let the Animation Editor pick a CFrame-table text/Lua file. */
+    public void pickAnimTextFile() {
+        this.animFileLauncher.launch(new String[]{"*/*"});
+    }
     private View chromeBottomBar;
     com.goydevv.studrblx.anim.AnimationModeView animMode;
     private TextView titleView;

@@ -9,6 +9,7 @@ import android.content.DialogInterface;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
+import android.net.Uri;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.SystemClock;
@@ -19,6 +20,7 @@ import android.view.View;
 import android.view.ViewGroup;
 import android.widget.EditText;
 import android.widget.FrameLayout;
+import android.widget.HorizontalScrollView;
 import android.widget.LinearLayout;
 import android.widget.RadioButton;
 import android.widget.RadioGroup;
@@ -27,6 +29,7 @@ import android.widget.SeekBar;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import com.goydevv.studrblx.MainActivity;
 import com.goydevv.studrblx.core.Studio;
 import com.goydevv.studrblx.core.Tool;
 import com.goydevv.studrblx.engine.AnimClip;
@@ -37,21 +40,23 @@ import com.goydevv.studrblx.model.InstanceFactory;
 import com.goydevv.studrblx.model.Vector3;
 import com.goydevv.studrblx.ui.Ui;
 
+import java.io.ByteArrayOutputStream;
+import java.io.InputStream;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Locale;
 
 /**
- * Full-screen animation workspace. It sits on top of the normal viewport (which keeps rendering the rig),
- * and only claims touches that land on its own panels so the 3D view stays interactive in the middle.
+ * Compact full-screen animation workspace for phones. The normal 3D viewport keeps rendering underneath;
+ * only touches that land on our small panels are consumed. Joints are posed with the regular Move / Rotate gizmos.
  */
 public final class AnimationModeView extends FrameLayout implements Studio.Listener {
 
-    private static final int TOP_H = 40;
-    private static final int BOTTOM_H = 156;
-    private static final int LEFT_W = 150;
-    private static final int RIGHT_W = 232;
+    private static final int TOP_H = 28;
+    private static final int BOTTOM_H = 92;
+    private static final int LEFT_W = 84;
+    private static final int RIGHT_W = 158;
 
     private final Activity act;
     private final Studio studio;
@@ -68,10 +73,10 @@ public final class AnimationModeView extends FrameLayout implements Studio.Liste
     private FrameLayout.LayoutParams lpTop, lpLeft, lpRight, lpBottom;
     private int cutL, cutT, cutR;
 
-    private TextView titleTv, timeTv, playBtn, undoBtn, redoBtn, nameBtn;
+    private TextView timeTv, playBtn, undoBtn, redoBtn, nameBtn, selBtn, moveBtn, rotBtn, propsBtn;
     private final List<TextView> jointRows = new ArrayList<TextView>();
     private TimelineView timeline;
-    private TextView jointTitle, styleBtn, dirBtn, lengthTv, fpsBtn, loopBtn, prioBtn, autoBtn;
+    private TextView jointTitle, styleBtn, dirBtn;
     private final SeekBar[] bars = new SeekBar[6];
     private final TextView[] vals = new TextView[6];
 
@@ -80,12 +85,15 @@ public final class AnimationModeView extends FrameLayout implements Studio.Liste
     private boolean pushNext = true;
     private boolean ignoreSel = false;
     private boolean playing = false;
+    private boolean propsVisible = false;
     private float playT = 0f;
     private long lastFrame = 0L;
+    private long lastAbsorb = 0L;
     private boolean closed = false;
+    private boolean running = false;
 
     private Tool prevTool;
-    private boolean prevInside;
+    private boolean prevInside, prevMoveSnap, prevRotSnap;
 
     public AnimationModeView(Activity act, Studio studio, RigInfo rig, Runnable onExit) {
         super(act);
@@ -103,23 +111,28 @@ public final class AnimationModeView extends FrameLayout implements Studio.Liste
     public void start() {
         studio.getListeners().add(this);
         prevTool = studio.getTool();
-        studio.setTool(Tool.SELECT);
         prevInside = studio.getSelectInsideModels();
+        prevMoveSnap = studio.getSnapEnabled();
+        prevRotSnap = studio.getRotSnapEnabled();
         studio.setSelectInsideModels(true);
+        studio.setSnapEnabled(false);
+        studio.setRotSnapEnabled(false);
         ignoreSel = true;
         studio.select(Collections.singletonList(rig.model));
         studio.focusSelection();
         ignoreSel = false;
         s.applyPose();
+        setToolMode(Tool.ROTATE);
         selectJoint(0, true);
         refreshAll();
+        running = true;
+        postOnAnimation(loop);
     }
 
     public boolean isDirty() {
         return s.dirty;
     }
 
-    /** Called by MainActivity for the Back button and the Exit button. */
     public void requestExit() {
         if (closed) return;
         if (!s.dirty) {
@@ -128,7 +141,7 @@ public final class AnimationModeView extends FrameLayout implements Studio.Liste
         }
         new AlertDialog.Builder(act)
                 .setTitle("Leave Animation Editor?")
-                .setMessage("You have unsaved changes to \"" + s.name + "\".")
+                .setMessage("Unsaved changes to \"" + s.name + "\".")
                 .setPositiveButton("Save & exit", new DialogInterface.OnClickListener() {
                     @Override
                     public void onClick(DialogInterface dialog, int which) {
@@ -149,11 +162,15 @@ public final class AnimationModeView extends FrameLayout implements Studio.Liste
     private void finishExit() {
         if (closed) return;
         closed = true;
-        stopPlayback();
+        running = false;
+        playing = false;
+        removeCallbacks(loop);
         studio.getListeners().remove(this);
         s.restoreRig();
         if (prevTool != null) studio.setTool(prevTool);
         studio.setSelectInsideModels(prevInside);
+        studio.setSnapEnabled(prevMoveSnap);
+        studio.setRotSnapEnabled(prevRotSnap);
         onExit.run();
     }
 
@@ -164,7 +181,7 @@ public final class AnimationModeView extends FrameLayout implements Studio.Liste
         applyLayout();
     }
 
-    // ------------------------------------------------------------------ small ui helpers
+    // ------------------------------------------------------------------ ui helpers
     private int dp(float v) {
         return Math.round(v * d);
     }
@@ -179,12 +196,13 @@ public final class AnimationModeView extends FrameLayout implements Studio.Liste
     private TextView btn(String label, int bg, final Runnable r) {
         TextView t = new TextView(act);
         t.setText(label);
-        t.setTextSize(12f);
+        t.setTextSize(10.5f);
         t.setTextColor(Color.WHITE);
         t.setTypeface(Typeface.DEFAULT_BOLD);
         t.setGravity(Gravity.CENTER);
-        t.setPadding(dp(9), dp(5), dp(9), dp(5));
-        t.setBackground(rounded(bg, 5));
+        t.setIncludeFontPadding(false);
+        t.setPadding(dp(6), dp(3), dp(6), dp(3));
+        t.setBackground(rounded(bg, 4));
         t.setOnClickListener(new OnClickListener() {
             @Override
             public void onClick(View v) {
@@ -199,6 +217,7 @@ public final class AnimationModeView extends FrameLayout implements Studio.Liste
         t.setText(s0);
         t.setTextSize(size);
         t.setTextColor(color);
+        t.setIncludeFontPadding(false);
         if (bold) t.setTypeface(Typeface.DEFAULT_BOLD);
         return t;
     }
@@ -217,32 +236,57 @@ public final class AnimationModeView extends FrameLayout implements Studio.Liste
         return 0xFF3C3C3C;
     }
 
+    private static int withAlpha(int c, int a) {
+        return (c & 0x00FFFFFF) | (a << 24);
+    }
+
+    private void toast(String m) {
+        Toast.makeText(act, m, Toast.LENGTH_SHORT).show();
+    }
+
     // ------------------------------------------------------------------ construction
     private void build() {
-        setClipChildren(false);
-
-        // ---- top bar
+        // ---- top bar (scrollable so nothing is ever cut off on narrow phones)
         topBar = new LinearLayout(act);
         topBar.setOrientation(LinearLayout.HORIZONTAL);
         topBar.setGravity(Gravity.CENTER_VERTICAL);
-        topBar.setBackgroundColor(Ui.INSTANCE.getTOPBAR());
-        topBar.addView(btn("\u2715 Exit", 0xFF8A3030, new Runnable() {
+        topBar.addView(btn("\u2715", 0xFF8A3030, new Runnable() {
             @Override
             public void run() {
                 requestExit();
             }
-        }), wrap(6, 0, 6, 0));
-        titleTv = label("Animation Editor \u2022 " + rig.displayName(), 13f, Ui.INSTANCE.getTEXT(), true);
-        topBar.addView(titleTv, wrap(4, 0, 8, 0));
+        }), wrap(2, 0, 2, 0));
         nameBtn = btn(s.name, soft(), new Runnable() {
             @Override
             public void run() {
                 renameDialog();
             }
         });
-        topBar.addView(nameBtn, wrap(0, 0, 6, 0));
-        View spacer = new View(act);
-        topBar.addView(spacer, new LinearLayout.LayoutParams(0, 1, 1f));
+        nameBtn.setSingleLine(true);
+        nameBtn.setMaxWidth(dp(110));
+        nameBtn.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        topBar.addView(nameBtn, wrap(2, 0, 6, 0));
+        selBtn = btn("Sel", soft(), new Runnable() {
+            @Override
+            public void run() {
+                setToolMode(Tool.SELECT);
+            }
+        });
+        moveBtn = btn("Move", soft(), new Runnable() {
+            @Override
+            public void run() {
+                setToolMode(Tool.MOVE);
+            }
+        });
+        rotBtn = btn("Rotate", soft(), new Runnable() {
+            @Override
+            public void run() {
+                setToolMode(Tool.ROTATE);
+            }
+        });
+        topBar.addView(selBtn, wrap(1, 0, 1, 0));
+        topBar.addView(moveBtn, wrap(1, 0, 1, 0));
+        topBar.addView(rotBtn, wrap(1, 0, 8, 0));
         undoBtn = btn("Undo", soft(), new Runnable() {
             @Override
             public void run() {
@@ -257,40 +301,61 @@ public final class AnimationModeView extends FrameLayout implements Studio.Liste
                 afterEdit();
             }
         });
-        topBar.addView(undoBtn, wrap(0, 0, 4, 0));
-        topBar.addView(redoBtn, wrap(0, 0, 8, 0));
+        topBar.addView(undoBtn, wrap(1, 0, 1, 0));
+        topBar.addView(redoBtn, wrap(1, 0, 8, 0));
         topBar.addView(btn("Import", soft(), new Runnable() {
             @Override
             public void run() {
                 importMenu();
             }
-        }), wrap(0, 0, 4, 0));
+        }), wrap(1, 0, 1, 0));
         topBar.addView(btn("Save", accent(), new Runnable() {
             @Override
             public void run() {
                 save();
             }
-        }), wrap(0, 0, 4, 0));
+        }), wrap(1, 0, 1, 0));
         topBar.addView(btn("Upload", 0xFF2E8B57, new Runnable() {
             @Override
             public void run() {
                 uploadDialog();
             }
-        }), wrap(0, 0, 6, 0));
+        }), wrap(1, 0, 8, 0));
+        topBar.addView(btn("Settings", soft(), new Runnable() {
+            @Override
+            public void run() {
+                settingsDialog();
+            }
+        }), wrap(1, 0, 1, 0));
+        propsBtn = btn("Pose", soft(), new Runnable() {
+            @Override
+            public void run() {
+                propsVisible = !propsVisible;
+                rightScroll.setVisibility(propsVisible ? VISIBLE : GONE);
+                paintTools();
+                if (propsVisible) refreshAll();
+            }
+        });
+        topBar.addView(propsBtn, wrap(1, 0, 4, 0));
+        HorizontalScrollView topScroll = new HorizontalScrollView(act);
+        topScroll.setHorizontalScrollBarEnabled(false);
+        topScroll.setBackgroundColor(withAlpha(Ui.INSTANCE.getTOPBAR(), 0xE6));
+        topScroll.addView(topBar);
+        topBar = null; // scroll is the real child; keep padding on it
+        topScrollRef = topScroll;
         lpTop = new LayoutParams(LayoutParams.MATCH_PARENT, dp(TOP_H), Gravity.TOP);
-        addView(topBar, lpTop);
+        addView(topScroll, lpTop);
 
-        // ---- left: joints
+        // ---- left: joints (narrow, wraps its content so the viewport stays visible)
         LinearLayout jointCol = new LinearLayout(act);
         jointCol.setOrientation(LinearLayout.VERTICAL);
-        jointCol.setPadding(dp(4), dp(4), dp(4), dp(4));
-        jointCol.addView(label("JOINTS", 10f, Ui.INSTANCE.getDIM(), true), wrap(4, 0, 0, 4));
         for (int i = 0; i < rig.joints.size(); i++) {
             final int idx = i;
             RigInfo.Joint j = rig.joints.get(i);
-            TextView row = label(j.name, 12f, Ui.INSTANCE.getTEXT(), false);
+            TextView row = label(j.name, 11f, Ui.INSTANCE.getTEXT(), false);
             row.setSingleLine(true);
-            row.setPadding(dp(6 + Math.min(j.depth, 6) * 8), dp(6), dp(6), dp(6));
+            row.setEllipsize(android.text.TextUtils.TruncateAt.END);
+            row.setPadding(dp(3 + Math.min(j.depth, 5) * 3), dp(4), dp(2), dp(4));
             row.setOnClickListener(new OnClickListener() {
                 @Override
                 public void onClick(View v) {
@@ -301,28 +366,29 @@ public final class AnimationModeView extends FrameLayout implements Studio.Liste
             jointCol.addView(row, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
         }
         leftScroll = new ScrollView(act);
-        leftScroll.setBackgroundColor(withAlpha(Ui.INSTANCE.getPANEL(), 0xE6));
+        leftScroll.setBackgroundColor(withAlpha(Ui.INSTANCE.getPANEL(), 0xB8));
         leftScroll.addView(jointCol);
-        lpLeft = new LayoutParams(dp(LEFT_W), LayoutParams.MATCH_PARENT, Gravity.LEFT);
+        lpLeft = new LayoutParams(dp(LEFT_W), LayoutParams.WRAP_CONTENT, Gravity.LEFT | Gravity.TOP);
         addView(leftScroll, lpLeft);
 
-        // ---- right: inspector
+        // ---- right: pose panel (hidden until toggled, gizmos are the primary way to pose)
         rightScroll = new ScrollView(act);
-        rightScroll.setBackgroundColor(withAlpha(Ui.INSTANCE.getPANEL(), 0xE6));
+        rightScroll.setBackgroundColor(withAlpha(Ui.INSTANCE.getPANEL(), 0xC8));
         rightScroll.addView(buildInspector());
-        lpRight = new LayoutParams(dp(RIGHT_W), LayoutParams.MATCH_PARENT, Gravity.RIGHT);
+        rightScroll.setVisibility(GONE);
+        lpRight = new LayoutParams(dp(RIGHT_W), LayoutParams.WRAP_CONTENT, Gravity.RIGHT | Gravity.TOP);
         addView(rightScroll, lpRight);
 
         // ---- bottom: transport + timeline
         bottom = new LinearLayout(act);
         bottom.setOrientation(LinearLayout.VERTICAL);
-        bottom.setBackgroundColor(withAlpha(Ui.INSTANCE.getPANEL(), 0xF2));
-        bottom.addView(buildTransport(), new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(38)));
+        bottom.setBackgroundColor(withAlpha(Ui.INSTANCE.getPANEL(), 0xE6));
+        bottom.addView(buildTransport(), new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(24)));
         timeline = new TimelineView(act, s);
         timeline.setListener(new TimelineView.Listener() {
             @Override
             public void onScrub(int tick) {
-                if (playing) stopPlayback();
+                stopPlayback();
                 seek(tick);
             }
 
@@ -334,7 +400,7 @@ public final class AnimationModeView extends FrameLayout implements Studio.Liste
 
             @Override
             public void onKeySelected(int tick) {
-                if (playing) stopPlayback();
+                stopPlayback();
                 seek(tick);
             }
 
@@ -350,16 +416,12 @@ public final class AnimationModeView extends FrameLayout implements Studio.Liste
         applyLayout();
     }
 
-    private static int withAlpha(int c, int a) {
-        return (c & 0x00FFFFFF) | (a << 24);
-    }
+    private HorizontalScrollView topScrollRef;
 
     private View buildTransport() {
         LinearLayout row = new LinearLayout(act);
         row.setOrientation(LinearLayout.HORIZONTAL);
         row.setGravity(Gravity.CENTER_VERTICAL);
-        row.setPadding(dp(4), 0, dp(4), 0);
-        row.setBackgroundColor(Ui.INSTANCE.getHEADER());
 
         row.addView(btn("|<", soft(), new Runnable() {
             @Override
@@ -367,7 +429,7 @@ public final class AnimationModeView extends FrameLayout implements Studio.Liste
                 stopPlayback();
                 seek(0);
             }
-        }), wrap(0, 0, 3, 0));
+        }), wrap(2, 0, 1, 0));
         row.addView(btn("<", soft(), new Runnable() {
             @Override
             public void run() {
@@ -375,7 +437,7 @@ public final class AnimationModeView extends FrameLayout implements Studio.Liste
                 Integer k = s.allTicks().lower(s.curTick);
                 seek(k != null ? k : Math.max(0, s.curTick - s.tickStep()));
             }
-        }), wrap(0, 0, 3, 0));
+        }), wrap(1, 0, 1, 0));
         playBtn = btn("Play", 0xFF2E8B57, new Runnable() {
             @Override
             public void run() {
@@ -383,8 +445,8 @@ public final class AnimationModeView extends FrameLayout implements Studio.Liste
                 else startPlayback();
             }
         });
-        playBtn.setMinWidth(dp(54));
-        row.addView(playBtn, wrap(0, 0, 3, 0));
+        playBtn.setMinWidth(dp(40));
+        row.addView(playBtn, wrap(1, 0, 1, 0));
         row.addView(btn(">", soft(), new Runnable() {
             @Override
             public void run() {
@@ -392,55 +454,55 @@ public final class AnimationModeView extends FrameLayout implements Studio.Liste
                 Integer k = s.allTicks().higher(s.curTick);
                 seek(k != null ? k : s.curTick + s.tickStep());
             }
-        }), wrap(0, 0, 3, 0));
+        }), wrap(1, 0, 1, 0));
         row.addView(btn(">|", soft(), new Runnable() {
             @Override
             public void run() {
                 stopPlayback();
                 seek(s.lengthTicks);
             }
-        }), wrap(0, 0, 8, 0));
+        }), wrap(1, 0, 6, 0));
 
-        timeTv = label("0.00s  f0", 12f, Ui.INSTANCE.getTEXT(), true);
-        timeTv.setMinWidth(dp(92));
-        row.addView(timeTv, wrap(0, 0, 8, 0));
+        timeTv = label("0.00s f0", 11f, Ui.INSTANCE.getTEXT(), true);
+        timeTv.setMinWidth(dp(66));
+        row.addView(timeTv, wrap(0, 0, 6, 0));
 
-        row.addView(btn("+ Key All", accent(), new Runnable() {
-            @Override
-            public void run() {
-                s.keyAll();
-                afterEdit();
-            }
-        }), wrap(0, 0, 3, 0));
-        row.addView(btn("+ Key Joint", accent(), new Runnable() {
+        row.addView(btn("+Key", accent(), new Runnable() {
             @Override
             public void run() {
                 s.keyJoint(currentJoint());
                 afterEdit();
             }
-        }), wrap(0, 0, 3, 0));
-        row.addView(btn("Del Key", 0xFF8A3030, new Runnable() {
+        }), wrap(1, 0, 1, 0));
+        row.addView(btn("+All", accent(), new Runnable() {
+            @Override
+            public void run() {
+                s.keyAll();
+                afterEdit();
+            }
+        }), wrap(1, 0, 1, 0));
+        row.addView(btn("Del", 0xFF8A3030, new Runnable() {
             @Override
             public void run() {
                 if (s.hasKey(currentJoint(), s.curTick)) s.deleteKeyAt(s.curTick, currentJoint());
                 else s.deleteKeyAt(s.curTick, null);
                 afterEdit();
             }
-        }), wrap(0, 0, 8, 0));
-        row.addView(btn("Zoom -", soft(), new Runnable() {
+        }), wrap(1, 0, 6, 0));
+        row.addView(btn("\u2212", soft(), new Runnable() {
             @Override
             public void run() {
                 timeline.zoom(0.7f);
             }
-        }), wrap(0, 0, 3, 0));
-        row.addView(btn("Zoom +", soft(), new Runnable() {
+        }), wrap(1, 0, 1, 0));
+        row.addView(btn("+", soft(), new Runnable() {
             @Override
             public void run() {
                 timeline.zoom(1.4f);
             }
-        }), wrap(0, 0, 0, 0));
+        }), wrap(1, 0, 2, 0));
 
-        android.widget.HorizontalScrollView hs = new android.widget.HorizontalScrollView(act);
+        HorizontalScrollView hs = new HorizontalScrollView(act);
         hs.setHorizontalScrollBarEnabled(false);
         hs.addView(row);
         hs.setBackgroundColor(Ui.INSTANCE.getHEADER());
@@ -450,50 +512,51 @@ public final class AnimationModeView extends FrameLayout implements Studio.Liste
     private View buildInspector() {
         LinearLayout col = new LinearLayout(act);
         col.setOrientation(LinearLayout.VERTICAL);
-        col.setPadding(dp(8), dp(6), dp(8), dp(10));
+        col.setPadding(dp(5), dp(3), dp(5), dp(5));
 
-        jointTitle = label("Joint", 13f, Ui.INSTANCE.getTEXT(), true);
-        col.addView(jointTitle, wrap(0, 0, 0, 4));
-
-        col.addView(label("ROTATION (deg)", 10f, Ui.INSTANCE.getDIM(), true), wrap(0, 2, 0, 0));
-        String[] ax = {"X", "Y", "Z"};
-        for (int i = 0; i < 3; i++) col.addView(sliderRow(i, ax[i], -180, 180, 1f, 1f), wrap(0, 0, 0, 0));
-        col.addView(label("POSITION (studs)", 10f, Ui.INSTANCE.getDIM(), true), wrap(0, 6, 0, 0));
-        for (int i = 0; i < 3; i++) col.addView(sliderRow(3 + i, ax[i], -500, 500, 0.02f, 0.05f), wrap(0, 0, 0, 0));
+        jointTitle = label("Joint", 11.5f, Ui.INSTANCE.getTEXT(), true);
+        col.addView(jointTitle, wrap(0, 0, 0, 2));
+        String[] ax = {"RX", "RY", "RZ", "X", "Y", "Z"};
+        for (int i = 0; i < 6; i++) {
+            if (i < 3) col.addView(sliderRow(i, ax[i], -180, 180, 1f), wrap(0, 0, 0, 0));
+            else col.addView(sliderRow(i, ax[i], -500, 500, 0.02f), wrap(0, 0, 0, 0));
+        }
 
         LinearLayout r1 = new LinearLayout(act);
-        r1.addView(btn("Reset joint", soft(), new Runnable() {
+        r1.addView(btn("Reset", soft(), new Runnable() {
             @Override
             public void run() {
                 s.resetJoint(currentJoint());
                 afterEdit();
             }
-        }), wrap(0, 6, 4, 0));
-        r1.addView(btn("Copy pose", soft(), new Runnable() {
+        }), wrap(0, 4, 2, 0));
+        r1.addView(btn("Copy", soft(), new Runnable() {
             @Override
             public void run() {
                 s.copyPose();
                 toast("Pose copied");
             }
-        }), wrap(0, 6, 4, 0));
+        }), wrap(0, 4, 2, 0));
         r1.addView(btn("Paste", soft(), new Runnable() {
             @Override
             public void run() {
-                if (!s.hasClipboard()) toast("Copy a pose first");
+                if (!s.hasClipboard()) {
+                    toast("Copy a pose first");
+                    return;
+                }
                 s.pastePose();
                 afterEdit();
             }
-        }), wrap(0, 6, 0, 0));
+        }), wrap(0, 4, 0, 0));
         col.addView(r1);
 
-        col.addView(label("KEY EASING (at playhead)", 10f, Ui.INSTANCE.getDIM(), true), wrap(0, 10, 0, 2));
         LinearLayout r2 = new LinearLayout(act);
         styleBtn = btn("Style", soft(), new Runnable() {
             @Override
             public void run() {
                 AnimSession.Key k = s.track(currentJoint()).get(s.curTick);
                 if (k == null) {
-                    toast("No key for this joint here. Add one first.");
+                    toast("No key on this joint at the playhead");
                     return;
                 }
                 s.setEasing(currentJoint(), s.curTick, (k.style + 1) % AnimSession.STYLES.length, k.dir);
@@ -505,120 +568,36 @@ public final class AnimationModeView extends FrameLayout implements Studio.Liste
             public void run() {
                 AnimSession.Key k = s.track(currentJoint()).get(s.curTick);
                 if (k == null) {
-                    toast("No key for this joint here. Add one first.");
+                    toast("No key on this joint at the playhead");
                     return;
                 }
                 s.setEasing(currentJoint(), s.curTick, k.style, (k.dir + 1) % AnimSession.DIRS.length);
                 afterEdit();
             }
         });
-        r2.addView(styleBtn, wrap(0, 0, 4, 0));
-        r2.addView(dirBtn, wrap(0, 0, 0, 0));
+        r2.addView(styleBtn, wrap(0, 4, 2, 0));
+        r2.addView(dirBtn, wrap(0, 4, 0, 0));
         col.addView(r2);
-
-        col.addView(label("ANIMATION", 10f, Ui.INSTANCE.getDIM(), true), wrap(0, 12, 0, 2));
-        LinearLayout r3 = new LinearLayout(act);
-        r3.setGravity(Gravity.CENTER_VERTICAL);
-        r3.addView(btn("-", soft(), new Runnable() {
-            @Override
-            public void run() {
-                s.lengthTicks = Math.max(Math.max(s.lastKeyTick(), AnimSession.TICKS / 4), s.lengthTicks - AnimSession.TICKS / 4);
-                s.dirty = true;
-                afterEdit();
-            }
-        }), wrap(0, 0, 4, 0));
-        lengthTv = label("", 12f, Ui.INSTANCE.getTEXT(), true);
-        r3.addView(lengthTv, wrap(0, 0, 4, 0));
-        r3.addView(btn("+", soft(), new Runnable() {
-            @Override
-            public void run() {
-                s.lengthTicks += AnimSession.TICKS / 4;
-                s.dirty = true;
-                afterEdit();
-            }
-        }), wrap(0, 0, 0, 0));
-        col.addView(r3);
-
-        LinearLayout r4 = new LinearLayout(act);
-        fpsBtn = btn("", soft(), new Runnable() {
-            @Override
-            public void run() {
-                s.fps = s.fps == 30 ? 60 : (s.fps == 60 ? 24 : 30);
-                afterEdit();
-            }
-        });
-        loopBtn = btn("", soft(), new Runnable() {
-            @Override
-            public void run() {
-                s.loop = !s.loop;
-                s.dirty = true;
-                afterEdit();
-            }
-        });
-        r4.addView(fpsBtn, wrap(0, 6, 4, 0));
-        r4.addView(loopBtn, wrap(0, 6, 0, 0));
-        col.addView(r4);
-
-        LinearLayout r5 = new LinearLayout(act);
-        prioBtn = btn("", soft(), new Runnable() {
-            @Override
-            public void run() {
-                s.priorityIdx = (s.priorityIdx + 1) % AnimSession.PRIORITY_NAMES.length;
-                s.dirty = true;
-                afterEdit();
-            }
-        });
-        autoBtn = btn("", soft(), new Runnable() {
-            @Override
-            public void run() {
-                s.autoKey = !s.autoKey;
-                afterEdit();
-            }
-        });
-        r5.addView(prioBtn, wrap(0, 6, 4, 0));
-        r5.addView(autoBtn, wrap(0, 6, 0, 0));
-        col.addView(r5);
-
-        col.addView(btn("Clear all keys", 0xFF8A3030, new Runnable() {
-            @Override
-            public void run() {
-                new AlertDialog.Builder(act).setTitle("Clear all keyframes?")
-                        .setPositiveButton("Clear", new DialogInterface.OnClickListener() {
-                            @Override
-                            public void onClick(DialogInterface dialog, int which) {
-                                s.clearAll();
-                                afterEdit();
-                            }
-                        }).setNegativeButton("Cancel", null).show();
-            }
-        }), wrap(0, 12, 0, 0));
         return col;
     }
 
-    private View sliderRow(final int idx, String axis, int min, int max, final float scale, final float step) {
+    private View sliderRow(final int idx, String axis, int min, int max, final float scale) {
         LinearLayout row = new LinearLayout(act);
         row.setGravity(Gravity.CENTER_VERTICAL);
-        TextView a = label(axis, 11f, Ui.INSTANCE.getDIM(), true);
-        a.setMinWidth(dp(12));
+        TextView a = label(axis, 10f, Ui.INSTANCE.getDIM(), true);
+        a.setMinWidth(dp(16));
         row.addView(a);
-        TextView minus = label("\u2212", 16f, Ui.INSTANCE.getTEXT(), true);
-        minus.setPadding(dp(8), dp(2), dp(8), dp(2));
-        row.addView(minus);
         SeekBar sb = new SeekBar(act);
         sb.setMax(max - min);
         sb.setTag(new float[]{min, scale});
-        sb.setPadding(dp(8), 0, dp(8), 0);
+        sb.setPadding(dp(6), 0, dp(6), 0);
         bars[idx] = sb;
-        row.addView(sb, new LinearLayout.LayoutParams(0, dp(30), 1f));
-        TextView plus = label("+", 16f, Ui.INSTANCE.getTEXT(), true);
-        plus.setPadding(dp(8), dp(2), dp(8), dp(2));
-        row.addView(plus);
-        TextView v = label("0", 11f, Ui.INSTANCE.getTEXT(), false);
-        v.setMinWidth(dp(36));
+        row.addView(sb, new LinearLayout.LayoutParams(0, dp(22), 1f));
+        TextView v = label("0", 10f, Ui.INSTANCE.getTEXT(), false);
+        v.setMinWidth(dp(28));
         v.setGravity(Gravity.RIGHT);
         vals[idx] = v;
         row.addView(v);
-
         sb.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
             @Override
             public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
@@ -628,7 +607,7 @@ public final class AnimationModeView extends FrameLayout implements Studio.Liste
 
             @Override
             public void onStartTrackingTouch(SeekBar seekBar) {
-                if (playing) stopPlayback();
+                stopPlayback();
                 pushNext = true;
             }
 
@@ -637,30 +616,7 @@ public final class AnimationModeView extends FrameLayout implements Studio.Liste
                 pushNext = true;
             }
         });
-        final float stepProg = step / scale;
-        minus.setOnClickListener(new OnClickListener() {
-            @Override
-            public void onClick(View v2) {
-                nudge(idx, -stepProg);
-            }
-        });
-        plus.setOnClickListener(new OnClickListener() {
-            @Override
-            public void onClick(View v2) {
-                nudge(idx, stepProg);
-            }
-        });
         return row;
-    }
-
-    private void nudge(int idx, float prog) {
-        if (playing) stopPlayback();
-        SeekBar sb = bars[idx];
-        suppress = true;
-        sb.setProgress(Math.max(0, Math.min(sb.getMax(), Math.round(sb.getProgress() + prog))));
-        suppress = false;
-        pushNext = true;
-        onSliderEdited();
     }
 
     private float sliderValue(int idx) {
@@ -674,7 +630,7 @@ public final class AnimationModeView extends FrameLayout implements Studio.Liste
     }
 
     private void onSliderEdited() {
-        if (suppress || selected < 0) return;
+        if (suppress) return;
         for (int i = 0; i < 6; i++) updateValueText(i);
         double r = Math.PI / 180.0;
         CFrame cf = CFrame.INSTANCE.at(new Vector3(sliderValue(3), sliderValue(4), sliderValue(5)))
@@ -688,6 +644,19 @@ public final class AnimationModeView extends FrameLayout implements Studio.Liste
     // ------------------------------------------------------------------ state
     private String currentJoint() {
         return rig.joints.get(Math.max(0, Math.min(selected, rig.joints.size() - 1))).name;
+    }
+
+    private void setToolMode(Tool t) {
+        studio.setTool(t);
+        paintTools();
+    }
+
+    private void paintTools() {
+        Tool t = studio.getTool();
+        selBtn.setBackground(rounded(t == Tool.SELECT ? accent() : soft(), 4));
+        moveBtn.setBackground(rounded(t == Tool.MOVE ? accent() : soft(), 4));
+        rotBtn.setBackground(rounded(t == Tool.ROTATE ? accent() : soft(), 4));
+        propsBtn.setBackground(rounded(propsVisible ? accent() : soft(), 4));
     }
 
     private void selectJoint(int idx, boolean updateStudio) {
@@ -705,7 +674,7 @@ public final class AnimationModeView extends FrameLayout implements Studio.Liste
     private void seek(int tick) {
         s.setTime(tick);
         s.applyPose();
-        timeline.setSelectedKey(s.hasKey(currentJoint(), s.curTick) || s.allTicks().contains(s.curTick) ? s.curTick : -1);
+        timeline.setSelectedKey(s.allTicks().contains(s.curTick) ? s.curTick : -1);
         timeline.follow();
         refreshAll();
     }
@@ -715,9 +684,8 @@ public final class AnimationModeView extends FrameLayout implements Studio.Liste
         refreshAll();
     }
 
-    /** Cheap refresh used while dragging sliders / playing back (no slider repositioning). */
     private void refreshLight() {
-        timeTv.setText(String.format(Locale.US, "%.2fs  f%d", s.seconds(s.curTick), s.frameOf(s.curTick)));
+        timeTv.setText(String.format(Locale.US, "%.2fs f%d", s.seconds(s.curTick), s.frameOf(s.curTick)));
         for (int i = 0; i < jointRows.size(); i++) paintRow(i);
         timeline.invalidate();
     }
@@ -726,7 +694,7 @@ public final class AnimationModeView extends FrameLayout implements Studio.Liste
         TextView row = jointRows.get(i);
         boolean sel = i == selected;
         boolean key = s.hasKey(rig.joints.get(i).name, s.curTick);
-        row.setText((key ? "\u25C6 " : "   ") + rig.joints.get(i).name);
+        row.setText((key ? "\u25C6" : "") + rig.joints.get(i).name);
         row.setTextColor(sel ? Color.WHITE : Ui.INSTANCE.getTEXT());
         row.setBackgroundColor(sel ? accent() : 0);
     }
@@ -736,66 +704,79 @@ public final class AnimationModeView extends FrameLayout implements Studio.Liste
         undoBtn.setAlpha(s.canUndo() ? 1f : 0.4f);
         redoBtn.setAlpha(s.canRedo() ? 1f : 0.4f);
         playBtn.setText(playing ? "Pause" : "Play");
-        jointTitle.setText(currentJoint());
-        lengthTv.setText(String.format(Locale.US, "Length %.2fs", s.seconds(s.lengthTicks)));
-        fpsBtn.setText(s.fps + " fps");
-        loopBtn.setText(s.loop ? "Loop: on" : "Loop: off");
-        prioBtn.setText("Priority: " + AnimSession.PRIORITY_NAMES[s.priorityIdx]);
-        autoBtn.setText(s.autoKey ? "Auto-key: on" : "Auto-key: off");
-        AnimSession.Key k = s.track(currentJoint()).get(s.curTick);
-        styleBtn.setText(k == null ? "Style: -" : AnimSession.STYLES[Math.min(k.style, AnimSession.STYLES.length - 1)]);
-        dirBtn.setText(k == null ? "Dir: -" : AnimSession.DIRS[Math.min(k.dir, AnimSession.DIRS.length - 1)]);
-
-        CFrame cf = s.current(currentJoint());
-        Vector3 e = cf.toEulerXYZ();
-        Vector3 p = cf.getPosition();
-        float[] vs = {
-                (float) Math.toDegrees(e.getX()), (float) Math.toDegrees(e.getY()), (float) Math.toDegrees(e.getZ()),
-                p.getX(), p.getY(), p.getZ()
-        };
-        suppress = true;
-        for (int i = 0; i < 6; i++) {
-            float[] meta = (float[]) bars[i].getTag();
-            int prog = Math.round(vs[i] / meta[1] - meta[0]);
-            bars[i].setProgress(Math.max(0, Math.min(bars[i].getMax(), prog)));
-            updateValueText(i);
+        paintTools();
+        if (propsVisible) {
+            jointTitle.setText(currentJoint());
+            AnimSession.Key k = s.track(currentJoint()).get(s.curTick);
+            styleBtn.setText(k == null ? "Ease: -" : AnimSession.STYLES[Math.min(k.style, AnimSession.STYLES.length - 1)]);
+            dirBtn.setText(k == null ? "-" : AnimSession.DIRS[Math.min(k.dir, AnimSession.DIRS.length - 1)]);
+            CFrame cf = s.current(currentJoint());
+            Vector3 e = cf.toEulerXYZ();
+            Vector3 p = cf.getPosition();
+            float[] vs = {
+                    (float) Math.toDegrees(e.getX()), (float) Math.toDegrees(e.getY()), (float) Math.toDegrees(e.getZ()),
+                    p.getX(), p.getY(), p.getZ()
+            };
+            suppress = true;
+            for (int i = 0; i < 6; i++) {
+                float[] meta = (float[]) bars[i].getTag();
+                int prog = Math.round(vs[i] / meta[1] - meta[0]);
+                bars[i].setProgress(Math.max(0, Math.min(bars[i].getMax(), prog)));
+                updateValueText(i);
+            }
+            suppress = false;
         }
-        suppress = false;
         refreshLight();
     }
 
-    private void toast(String m) {
-        Toast.makeText(act, m, Toast.LENGTH_SHORT).show();
-    }
-
-    // ------------------------------------------------------------------ playback
-    private final Runnable frame = new Runnable() {
+    // ------------------------------------------------------------------ frame loop: playback + gizmo capture
+    private final Runnable loop = new Runnable() {
         @Override
         public void run() {
-            if (!playing) return;
-            long now = SystemClock.uptimeMillis();
-            float dt = (now - lastFrame) / 1000f * AnimSession.TICKS;
-            lastFrame = now;
-            playT += dt;
-            int len = Math.max(1, s.lengthTicks);
-            if (playT >= len) {
-                if (s.loop) {
-                    playT = playT % len;
-                } else {
-                    playT = len;
-                    s.setTime(len);
-                    s.applyPose();
-                    stopPlayback();
-                    return;
-                }
-            }
-            s.setTime((int) playT);
-            s.applyPose();
-            timeline.follow();
-            refreshLight();
+            if (!running) return;
+            if (playing) stepPlayback();
+            else gizmoPoll();
             postOnAnimation(this);
         }
     };
+
+    private void stepPlayback() {
+        long now = SystemClock.uptimeMillis();
+        float dt = (now - lastFrame) / 1000f * AnimSession.TICKS;
+        lastFrame = now;
+        playT += dt;
+        int len = Math.max(1, s.lengthTicks);
+        if (playT >= len) {
+            if (s.loop) {
+                playT = playT % len;
+            } else {
+                s.setTime(len);
+                s.applyPose();
+                stopPlayback();
+                return;
+            }
+        }
+        s.setTime((int) playT);
+        s.applyPose();
+        timeline.follow();
+        refreshLight();
+    }
+
+    /** The user dragged the selected part with the Move/Rotate gizmo: turn it into a joint pose. */
+    private void gizmoPoll() {
+        Tool t = studio.getTool();
+        boolean rot = t == Tool.ROTATE;
+        boolean mov = t == Tool.MOVE;
+        if (!rot && !mov) return;
+        long now = SystemClock.uptimeMillis();
+        boolean newDrag = now - lastAbsorb > 350;
+        if (s.absorbExternalEdit(selected, rot, mov, newDrag)) {
+            lastAbsorb = now;
+            s.applyPose();
+            if (propsVisible) refreshAll();
+            else refreshLight();
+        }
+    }
 
     private void startPlayback() {
         if (playing) return;
@@ -803,13 +784,11 @@ public final class AnimationModeView extends FrameLayout implements Studio.Liste
         playT = s.curTick >= s.lengthTicks ? 0f : s.curTick;
         lastFrame = SystemClock.uptimeMillis();
         playBtn.setText("Pause");
-        postOnAnimation(frame);
     }
 
     private void stopPlayback() {
         if (!playing) return;
         playing = false;
-        removeCallbacks(frame);
         playBtn.setText("Play");
         refreshAll();
     }
@@ -833,22 +812,169 @@ public final class AnimationModeView extends FrameLayout implements Studio.Liste
                 }).setNegativeButton("Cancel", null).show();
     }
 
+    private void settingsDialog() {
+        stopPlayback();
+        final String[] items = {
+                String.format(Locale.US, "Length: %.2fs  (tap = +0.25s)", s.seconds(s.lengthTicks)),
+                "Length -0.25s",
+                "Length = last keyframe",
+                "FPS: " + s.fps + "  (tap to change)",
+                "Loop: " + (s.loop ? "on" : "off"),
+                "Priority: " + AnimSession.PRIORITY_NAMES[s.priorityIdx],
+                "Auto-key: " + (s.autoKey ? "on" : "off"),
+                "Zero rig rotation (0,0,0)",
+                "Clear all keyframes"
+        };
+        new AlertDialog.Builder(act).setTitle("Animation settings").setItems(items, new DialogInterface.OnClickListener() {
+            @Override
+            public void onClick(DialogInterface dialog, int which) {
+                switch (which) {
+                    case 0:
+                        s.lengthTicks += AnimSession.TICKS / 4;
+                        break;
+                    case 1:
+                        s.lengthTicks = Math.max(Math.max(s.lastKeyTick(), AnimSession.TICKS / 4), s.lengthTicks - AnimSession.TICKS / 4);
+                        break;
+                    case 2:
+                        s.lengthTicks = Math.max(AnimSession.TICKS / 4, s.lastKeyTick());
+                        break;
+                    case 3:
+                        s.fps = s.fps == 30 ? 60 : (s.fps == 60 ? 24 : 30);
+                        break;
+                    case 4:
+                        s.loop = !s.loop;
+                        break;
+                    case 5:
+                        s.priorityIdx = (s.priorityIdx + 1) % AnimSession.PRIORITY_NAMES.length;
+                        break;
+                    case 6:
+                        s.autoKey = !s.autoKey;
+                        break;
+                    case 7:
+                        s.zeroRigRotation();
+                        toast("Rig rotation zeroed");
+                        refreshAll();
+                        return;
+                    case 8:
+                        s.clearAll();
+                        afterEdit();
+                        return;
+                    default:
+                        break;
+                }
+                s.dirty = true;
+                afterEdit();
+                if (which <= 6) settingsDialog();
+            }
+        }).setNegativeButton("Close", null).show();
+    }
+
     private void save() {
         Instance ks = s.saveToRig();
         studio.markDirty();
-        toast("Saved KeyframeSequence \"" + ks.getName() + "\" into " + rig.displayName());
+        toast("Saved KeyframeSequence \"" + ks.getName() + "\" in " + rig.displayName());
         refreshAll();
     }
 
     private void importMenu() {
-        final String[] items = {"From a KeyframeSequence in this place", "From an animation asset ID"};
+        final String[] items = {"CFrame table (paste text)", "CFrame table (.txt / .lua file)", "KeyframeSequence in this place", "Animation asset ID"};
         new AlertDialog.Builder(act).setTitle("Import animation").setItems(items, new DialogInterface.OnClickListener() {
             @Override
             public void onClick(DialogInterface dialog, int which) {
-                if (which == 0) importFromPlace();
+                if (which == 0) importPasteDialog();
+                else if (which == 1) {
+                    if (act instanceof MainActivity) ((MainActivity) act).pickAnimTextFile();
+                } else if (which == 2) importFromPlace();
                 else importFromId();
             }
         }).show();
+    }
+
+    private void importPasteDialog() {
+        final EditText et = new EditText(act);
+        et.setHint("Paste the Lua table here");
+        et.setMinLines(4);
+        et.setMaxLines(8);
+        et.setTextSize(11f);
+        et.setGravity(Gravity.TOP);
+        try {
+            ClipboardManager cm = (ClipboardManager) act.getSystemService(Context.CLIPBOARD_SERVICE);
+            if (cm != null && cm.hasPrimaryClip() && cm.getPrimaryClip().getItemCount() > 0) {
+                CharSequence c = cm.getPrimaryClip().getItemAt(0).coerceToText(act);
+                if (c != null && c.toString().contains("CFrame")) et.setText(c);
+            }
+        } catch (Throwable ignored) {
+        }
+        new AlertDialog.Builder(act).setTitle("Import CFrame table").setView(et)
+                .setPositiveButton("Import", new DialogInterface.OnClickListener() {
+                    @Override
+                    public void onClick(DialogInterface dialog, int which) {
+                        importCFrameText(et.getText().toString(), "Imported");
+                    }
+                }).setNegativeButton("Cancel", null).show();
+    }
+
+    /** Called by MainActivity after the user picked a text/Lua file. */
+    public void onTextFile(final Uri uri) {
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    InputStream in = act.getContentResolver().openInputStream(uri);
+                    ByteArrayOutputStream bo = new ByteArrayOutputStream();
+                    byte[] buf = new byte[8192];
+                    int n;
+                    while (in != null && (n = in.read(buf)) > 0) {
+                        bo.write(buf, 0, n);
+                        if (bo.size() > 16 * 1024 * 1024) throw new Exception("File is too large.");
+                    }
+                    if (in != null) in.close();
+                    final String text = bo.toString("UTF-8");
+                    String last = uri.getLastPathSegment() == null ? "Imported" : uri.getLastPathSegment();
+                    int slash = Math.max(last.lastIndexOf('/'), last.lastIndexOf(':'));
+                    if (slash >= 0) last = last.substring(slash + 1);
+                    int dot = last.lastIndexOf('.');
+                    if (dot > 0) last = last.substring(0, dot);
+                    final String label = last;
+                    post(new Runnable() {
+                        @Override
+                        public void run() {
+                            importCFrameText(text, label);
+                        }
+                    });
+                } catch (final Throwable t) {
+                    post(new Runnable() {
+                        @Override
+                        public void run() {
+                            toast("Could not read file: " + t.getMessage());
+                        }
+                    });
+                }
+            }
+        }, "anim-read").start();
+    }
+
+    private void importCFrameText(String text, String label) {
+        try {
+            List<CFrameTable.Frame> frames = CFrameTable.parse(text);
+            stopPlayback();
+            String report = s.importFrames(frames, label);
+            s.applyPose();
+            timeline.setJoint(currentJoint());
+            seek(0);
+            new AlertDialog.Builder(act).setTitle("Imported \"" + label + "\"").setMessage(report)
+                    .setPositiveButton("Play", new DialogInterface.OnClickListener() {
+                        @Override
+                        public void onClick(DialogInterface dialog, int which) {
+                            seek(0);
+                            startPlayback();
+                        }
+                    }).setNegativeButton("Edit", null).show();
+        } catch (Throwable t) {
+            new AlertDialog.Builder(act).setTitle("Import failed")
+                    .setMessage(t.getMessage() == null ? t.toString() : t.getMessage())
+                    .setPositiveButton("OK", null).show();
+        }
     }
 
     private void importFromPlace() {
@@ -857,7 +983,7 @@ public final class AnimationModeView extends FrameLayout implements Studio.Liste
             if ("KeyframeSequence".equals(i.getClassName())) found.add(i);
         }
         if (found.isEmpty()) {
-            toast("No KeyframeSequence found in this place.");
+            toast("No KeyframeSequence in this place.");
             return;
         }
         String[] names = new String[found.size()];
@@ -885,7 +1011,7 @@ public final class AnimationModeView extends FrameLayout implements Studio.Liste
                         try {
                             id = Long.parseLong(et.getText().toString().trim());
                         } catch (Exception e) {
-                            toast("That is not a valid asset ID.");
+                            toast("Not a valid asset ID.");
                             return;
                         }
                         pollClip(id, 0);
@@ -903,7 +1029,7 @@ public final class AnimationModeView extends FrameLayout implements Studio.Liste
             return;
         }
         if (AnimLibrary.INSTANCE.failed(id) || attempt > 40) {
-            toast("Could not download/parse animation " + id + " (private, not an animation, or offline).");
+            toast("Could not download/parse animation " + id + ".");
             return;
         }
         if (attempt == 0) toast("Downloading animation...");
@@ -917,7 +1043,7 @@ public final class AnimationModeView extends FrameLayout implements Studio.Liste
 
     private void uploadDialog() {
         stopPlayback();
-        if (s.lastKeyTick() == 0 && s.allTicks().isEmpty()) {
+        if (s.allTicks().isEmpty()) {
             toast("Add some keyframes before uploading.");
             return;
         }
@@ -925,9 +1051,9 @@ public final class AnimationModeView extends FrameLayout implements Studio.Liste
 
         LinearLayout col = new LinearLayout(act);
         col.setOrientation(LinearLayout.VERTICAL);
-        col.setPadding(dp(18), dp(8), dp(18), dp(0));
+        col.setPadding(dp(16), dp(4), dp(16), 0);
         final EditText key = new EditText(act);
-        key.setHint("Open Cloud API key (needs Assets write)");
+        key.setHint("Open Cloud API key (Assets write)");
         key.setSingleLine(true);
         key.setText(st.apiKey);
         key.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
@@ -955,10 +1081,8 @@ public final class AnimationModeView extends FrameLayout implements Studio.Liste
         desc.setSingleLine(true);
         desc.setText("Made with StudioRblx Animation Editor");
         col.addView(desc);
-        TextView note = label("The key must be created under the same user/group, with the Assets API permission.", 11f, Ui.INSTANCE.getDIM(), false);
-        col.addView(note, wrap(0, 6, 0, 0));
 
-        new AlertDialog.Builder(act).setTitle("Upload \"" + s.name + "\" to Roblox").setView(col)
+        new AlertDialog.Builder(act).setTitle("Upload \"" + s.name + "\"").setView(col)
                 .setPositiveButton("Upload", new DialogInterface.OnClickListener() {
                     @Override
                     public void onClick(DialogInterface dialog, int which) {
@@ -1023,8 +1147,7 @@ public final class AnimationModeView extends FrameLayout implements Studio.Liste
     private void uploadDone(final String assetId) {
         final String url = "rbxassetid://" + assetId;
         new AlertDialog.Builder(act).setTitle("Uploaded!")
-                .setMessage("Animation ID: " + assetId + "\n" + url
-                        + "\n\nIf the animation does not play in your experience, share it with that experience/group (Animation Sharing).")
+                .setMessage("Animation ID: " + assetId + "\n" + url)
                 .setPositiveButton("Copy ID", new DialogInterface.OnClickListener() {
                     @Override
                     public void onClick(DialogInterface dialog, int which) {
@@ -1033,7 +1156,7 @@ public final class AnimationModeView extends FrameLayout implements Studio.Liste
                         toast("Copied " + url);
                     }
                 })
-                .setNeutralButton("Add Animation instance", new DialogInterface.OnClickListener() {
+                .setNeutralButton("Add Animation", new DialogInterface.OnClickListener() {
                     @Override
                     public void onClick(DialogInterface dialog, int which) {
                         Instance a = InstanceFactory.INSTANCE.create("Animation");
@@ -1041,7 +1164,7 @@ public final class AnimationModeView extends FrameLayout implements Studio.Liste
                         a.set("AnimationId", url, false);
                         a.setParent(rig.model, -1);
                         studio.markDirty();
-                        toast("Added Animation \"" + s.name + "\" to " + rig.displayName());
+                        toast("Added Animation \"" + s.name + "\"");
                     }
                 })
                 .setNegativeButton("Close", null).show();
@@ -1068,7 +1191,7 @@ public final class AnimationModeView extends FrameLayout implements Studio.Liste
     // ------------------------------------------------------------------ layout + touch passthrough
     private void applyLayout() {
         if (lpTop == null) return;
-        topBar.setPadding(cutL, cutT, cutR, 0);
+        topScrollRef.setPadding(cutL, cutT, cutR, 0);
         lpTop.height = dp(TOP_H) + cutT;
         lpLeft.width = dp(LEFT_W) + cutL;
         lpLeft.topMargin = lpTop.height;
@@ -1089,7 +1212,7 @@ public final class AnimationModeView extends FrameLayout implements Studio.Liste
         if (e.getActionMasked() == MotionEvent.ACTION_DOWN) {
             passthrough = !hitsPanel(e.getX(), e.getY());
         }
-        if (passthrough) return false; // let the 3D viewport underneath handle it
+        if (passthrough) return false; // the 3D viewport + gizmos underneath handle it
         return super.dispatchTouchEvent(e);
     }
 
